@@ -234,9 +234,9 @@ public class PailTap extends Hfs {
 
     @Override
     public void sinkConfInit(FlowProcess<JobConf> process, JobConf conf) {
-        if(_options.attrs!=null && _options.attrs.length > 0) {
+        if(_options.attrs!=null && _options.attrs.length > 0)
             throw new TapException("can't declare attributes in a sink");
-        }
+
         super.sinkConfInit(process, conf);
     }
 
