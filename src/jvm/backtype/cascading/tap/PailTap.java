@@ -1,11 +1,8 @@
 package backtype.cascading.tap;
 
 import backtype.hadoop.pail.*;
-import backtype.support.CascadingUtils;
 import backtype.support.Utils;
-import cascading.flow.Flow;
-import cascading.flow.FlowListener;
-import cascading.flow.hadoop.HadoopFlowProcess;
+import cascading.flow.FlowProcess;
 import cascading.scheme.Scheme;
 import cascading.scheme.SinkCall;
 import cascading.scheme.SourceCall;
@@ -28,11 +25,12 @@ import org.apache.log4j.Logger;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-public class PailTap extends Hfs implements FlowListener {
+public class PailTap extends Hfs {
     private static Logger LOG = Logger.getLogger(PailTap.class);
 
     public static PailSpec makeSpec(PailSpec given, PailStructure structure) {
@@ -62,7 +60,7 @@ public class PailTap extends Hfs implements FlowListener {
     }
 
 
-    public class PailScheme extends Scheme<HadoopFlowProcess, JobConf, RecordReader, OutputCollector, Object[], Object[]> {
+    public class PailScheme extends Scheme<FlowProcess<JobConf>, JobConf, RecordReader, OutputCollector, Object[], Object[]> {
         private PailTapOptions _options;
 
         public PailScheme(PailTapOptions options) {
@@ -109,7 +107,8 @@ public class PailTap extends Hfs implements FlowListener {
         }
 
         @Override
-        public void sourceConfInit(HadoopFlowProcess process, Tap tap, JobConf conf) {
+        public void sourceConfInit(FlowProcess<JobConf> process,
+            Tap<FlowProcess<JobConf>, JobConf, RecordReader, OutputCollector> tap, JobConf conf) {
             Pail p;
             try {
                 p = new Pail(_pailRoot); //make sure it exists
@@ -120,8 +119,8 @@ public class PailTap extends Hfs implements FlowListener {
             PailFormatFactory.setPailPathLister(conf, _options.lister);
         }
 
-        @Override
-        public void sinkConfInit(HadoopFlowProcess prcs, Tap tap, JobConf conf) {
+        @Override public void sinkConfInit(FlowProcess<JobConf> flowProcess,
+            Tap<FlowProcess<JobConf>, JobConf, RecordReader, OutputCollector> tap, JobConf conf) {
             conf.setOutputFormat(PailOutputFormat.class);
             Utils.setObject(conf, PailOutputFormat.SPEC_ARG, getSpec());
             try {
@@ -132,7 +131,7 @@ public class PailTap extends Hfs implements FlowListener {
         }
 
         @Override
-        public void sourcePrepare(HadoopFlowProcess flowProcess, SourceCall<Object[], RecordReader> sourceCall) {
+        public void sourcePrepare(FlowProcess<JobConf> flowProcess, SourceCall<Object[], RecordReader> sourceCall) {
             sourceCall.setContext(new Object[2]);
 
             sourceCall.getContext()[0] = sourceCall.getInput().createKey();
@@ -140,7 +139,7 @@ public class PailTap extends Hfs implements FlowListener {
         }
 
         @Override
-        public boolean source(HadoopFlowProcess process, SourceCall<Object[], RecordReader> sourceCall) throws IOException {
+        public boolean source(FlowProcess<JobConf> process, SourceCall<Object[], RecordReader> sourceCall) throws IOException {
             Object k = sourceCall.getContext()[0];
             Object v = sourceCall.getContext()[1];
             boolean result = sourceCall.getInput().next(k, v);
@@ -152,7 +151,7 @@ public class PailTap extends Hfs implements FlowListener {
         }
 
         @Override
-        public void sink(HadoopFlowProcess process, SinkCall<Object[], OutputCollector> sinkCall) throws IOException {
+        public void sink(FlowProcess<JobConf> process, SinkCall<Object[], OutputCollector> sinkCall) throws IOException {
             TupleEntry tuple = sinkCall.getOutgoingEntry();
 
             Object obj = tuple.getObject(0);
@@ -198,7 +197,7 @@ public class PailTap extends Hfs implements FlowListener {
 
     //no good way to override this, just had to copy/paste and modify
     @Override
-    public void sourceConfInit(HadoopFlowProcess process, JobConf conf) {
+    public void sourceConfInit(FlowProcess<JobConf> process, JobConf conf) {
         try {
             Path root = getQualifiedPath(conf);
             if(_options.attrs!=null && _options.attrs.length>0) {
@@ -223,7 +222,8 @@ public class PailTap extends Hfs implements FlowListener {
     }
 
     private void makeLocal(JobConf conf, Path qualifiedPath, String infoMessage) {
-        if( !conf.get( "mapred.job.tracker", "" ).equalsIgnoreCase( "local" ) && qualifiedPath.toUri().getScheme().equalsIgnoreCase( "file" ) )
+        if( !conf.get( "mapred.job.tracker", "" ).equalsIgnoreCase( "local" ) &&
+            qualifiedPath.toUri().getScheme().equalsIgnoreCase( "file" ) )
         {
             if( LOG.isInfoEnabled() )
                 LOG.info( infoMessage + toString() );
@@ -233,48 +233,36 @@ public class PailTap extends Hfs implements FlowListener {
     }
 
     @Override
-    public void sinkConfInit(HadoopFlowProcess process, JobConf conf) {
-        if(_options.attrs!=null && _options.attrs.length>0) {
+    public void sinkConfInit(FlowProcess<JobConf> process, JobConf conf) {
+        if(_options.attrs!=null && _options.attrs.length > 0) {
             throw new TapException("can't declare attributes in a sink");
         }
         super.sinkConfInit(process, conf);
     }
 
-    public void onCompleted(Flow flow) {
-        try {
-            //only if it's a sink
-            if(flow.getFlowStats().isSuccessful() && CascadingUtils.isSinkOf(this, flow)) {
-                Pail p = Pail.create(_pailRoot, ((PailScheme)getScheme()).getSpec(), false);
-                FileSystem fs = p.getFileSystem();
-                Path tmpPath = new Path(_pailRoot, "_temporary");
-                if(fs.exists(tmpPath)) {
-                    LOG.info("Deleting _temporary directory left by Hadoop job: " + tmpPath.toString());
-                    fs.delete(tmpPath, true);
-                }
-
-                Path tmp2Path = new Path(_pailRoot, "_temporary2");
-                if(fs.exists(tmp2Path)) {
-                    LOG.info("Deleting _temporary2 directory: " + tmp2Path.toString());
-                    fs.delete(tmp2Path, true);
-                }
-
-                Path logPath = new Path(_pailRoot, "_logs");
-                if(fs.exists(logPath)) {
-                    LOG.info("Deleting _logs directory left by Hadoop job: " + logPath.toString());
-                    fs.delete(logPath, true);
-                }
-            }
-        } catch(IOException e) {
-            throw new TapException(e);
+    @Override
+    public boolean commitResource(JobConf conf) throws IOException {
+        Pail p = Pail.create(_pailRoot, ((PailScheme)getScheme()).getSpec(), false);
+        FileSystem fs = p.getFileSystem();
+        Path tmpPath = new Path(_pailRoot, "_temporary");
+        if(fs.exists(tmpPath)) {
+            LOG.info("Deleting _temporary directory left by Hadoop job: " + tmpPath.toString());
+            fs.delete(tmpPath, true);
         }
-    }
 
-    public void onStarting(Flow flow) {}
+        Path tmp2Path = new Path(_pailRoot, "_temporary2");
+        if(fs.exists(tmp2Path)) {
+            LOG.info("Deleting _temporary2 directory: " + tmp2Path.toString());
+            fs.delete(tmp2Path, true);
+        }
 
-    public void onStopping(Flow flow) {}
+        Path logPath = new Path(_pailRoot, "_logs");
+        if(fs.exists(logPath)) {
+            LOG.info("Deleting _logs directory left by Hadoop job: " + logPath.toString());
+            fs.delete(logPath, true);
+        }
 
-    public boolean onThrowable(Flow flow, Throwable thrwbl) {
-        return false;
+        return true;
     }
 
     @Override
@@ -290,15 +278,11 @@ public class PailTap extends Hfs implements FlowListener {
         PailTap other = (PailTap) object;
         Set<List<String>> myattrs = new HashSet<List<String>>();
         if(_options.attrs!=null) {
-            for(List<String> a: _options.attrs) {
-                myattrs.add(a);
-            }
+            Collections.addAll(myattrs, _options.attrs);
         }
         Set<List<String>> otherattrs = new HashSet<List<String>>();
         if(other._options.attrs!=null) {
-            for(List<String> a: other._options.attrs) {
-                otherattrs.add(a);
-            }
+            Collections.addAll(otherattrs, other._options.attrs);
         }
         return _pailRoot.equals(other._pailRoot) && myattrs.equals(otherattrs);
     }
